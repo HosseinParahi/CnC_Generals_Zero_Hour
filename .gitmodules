@@ -1,0 +1,3 @@
+[submodule "ports/GeneralsX"]
+	path = ports/GeneralsX
+	url = https://github.com/fbraz3/GeneralsX.git

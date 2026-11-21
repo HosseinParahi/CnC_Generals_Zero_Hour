@@ -1,0 +1,191 @@
+diff --git a/Core/GameEngine/Source/GameNetwork/LANAPIhandlers.cpp b/Core/GameEngine/Source/GameNetwork/LANAPIhandlers.cpp
+index 9d95530..5e8ed4b 100644
+--- a/Core/GameEngine/Source/GameNetwork/LANAPIhandlers.cpp
++++ b/Core/GameEngine/Source/GameNetwork/LANAPIhandlers.cpp
+@@ -369,6 +369,14 @@ void LANAPI::handleRequestJoin( LANMessage *msg, UnsignedInt senderIP )
+ 			if (msg->GameToJoin.iniCRC != TheGlobalData->m_iniCRC ||
+ 					msg->GameToJoin.exeCRC != TheGlobalData->m_exeCRC)
+ 			{
++				FILE *crcDiag = fopen("/tmp/GeneralsX_LAN_CRC_diag.txt", "a");
++				if (crcDiag)
++				{
++					fprintf(crcDiag, "host exe=%08X ini=%08X client exe=%08X ini=%08X\n",
++						TheGlobalData->m_exeCRC, TheGlobalData->m_iniCRC,
++						msg->GameToJoin.exeCRC, msg->GameToJoin.iniCRC);
++					fclose(crcDiag);
++				}
+ 				DEBUG_LOG(("LANAPI::handleRequestJoin - join denied because of CRC mismatch. CRCs are them/us INI:%X/%X exe:%X/%X",
+ 					msg->GameToJoin.iniCRC, TheGlobalData->m_iniCRC,
+ 					msg->GameToJoin.exeCRC, TheGlobalData->m_exeCRC));
+diff --git a/Generals/Code/GameEngine/Source/Common/GlobalData.cpp b/Generals/Code/GameEngine/Source/Common/GlobalData.cpp
+index aa2d9ed..9738e9a 100644
+--- a/Generals/Code/GameEngine/Source/Common/GlobalData.cpp
++++ b/Generals/Code/GameEngine/Source/Common/GlobalData.cpp
+@@ -54,6 +54,7 @@
+ #include "Common/INI.h"
+ #include "Common/OptionPreferences.h"
+ #include "Common/version.h"
++#include "gitinfo.h"
+ 
+ #include "GameLogic/AI.h"
+ #include "GameLogic/Weapon.h"
+@@ -1365,6 +1366,8 @@ UnsignedInt GlobalData::generateExeCRC()
+ 	const Int blockSize = 65536;
+ 	CRC exeCRC;
+ 	File *fp;
++	FILE *crcSteps = fopen("/tmp/GeneralsX_exe_crc_steps.txt", "w");
++	Int crcScriptBytes = 0;
+ 	// TheSuperHackers @tweak SkyAero/xezon 27/05/2025
+ 	// Simulate the EXE's CRC value to force Network and Replay compatibility with another build.
+ #if (defined(_MSC_VER) && _MSC_VER < 1300) && RETAIL_COMPATIBLE_CRC
+@@ -1377,25 +1380,15 @@ UnsignedInt GlobalData::generateExeCRC()
+ 	DEBUG_LOG(("Fake EXE CRC is 0x%8.8X", exeCRC.get()));
+ 
+ #else
+-	{
+-		Char buffer[ _MAX_PATH ];
+-		GetModuleFileName( nullptr, buffer, sizeof( buffer ) );
+-		fp = TheFileSystem->openFile(buffer, File::READ | File::BINARY);
+-		if (fp != nullptr) {
+-			unsigned char crcBlock[blockSize];
+-			Int amtRead = 0;
+-			while ( (amtRead=fp->read(crcBlock, blockSize)) > 0 )
+-			{
+-				exeCRC.computeCRC(crcBlock, amtRead);
+-			}
+-			DEBUG_LOG(("EXE CRC is 0x%8.8X", exeCRC.get()));
+-			fp->close();
+-			fp = nullptr;
+-		}
+-		else {
+-			DEBUG_CRASH(("Executable file has failed to open"));
+-		}
+-	}
++	// GeneralsX supports LAN play across Windows and native macOS/Linux builds.
++	// Hashing executable bytes makes PE/COFF and Mach-O binaries report different
++	// CRCs even when they were built from the same source revision. Use the full
++	// 40-character commit ID so platform-specific Git abbreviation lengths cannot
++	// produce different network compatibility CRCs.
++	AsciiString buildIdentity = GitSHA1;
++	exeCRC.computeCRC(buildIdentity.str(), buildIdentity.getLength());
++	if (crcSteps) fprintf(crcSteps, "sha=%s length=%d crc=%08X\n", buildIdentity.str(), buildIdentity.getLength(), exeCRC.get());
++	DEBUG_LOG(("Full source commit '%s' CRC is 0x%8.8X", buildIdentity.str(), exeCRC.get()));
+ #endif
+ 
+ 	UnsignedInt version = 0;
+@@ -1404,6 +1397,7 @@ UnsignedInt GlobalData::generateExeCRC()
+ 		version = TheVersion->getVersionNumber();
+ 		exeCRC.computeCRC( &version, sizeof(UnsignedInt) );
+ 	}
++	if (crcSteps) fprintf(crcSteps, "version=%08X crc=%08X\n", version, exeCRC.get());
+ 	// GeneralsX @bugfix Copilot 22/03/2026 Load shared script CRC inputs relative to the configured asset root.
+ 	// Add in MP scripts to the EXE CRC, since the game will go out of sync if they change
+ 	fp = TheFileSystem->openFile("Data\\Scripts\\SkirmishScripts.scb", File::READ | File::BINARY);
+@@ -1413,10 +1407,13 @@ UnsignedInt GlobalData::generateExeCRC()
+ 		while ( (amtRead=fp->read(crcBlock, blockSize)) > 0 )
+ 		{
+ 			exeCRC.computeCRC(crcBlock, amtRead);
++			crcScriptBytes += amtRead;
+ 		}
+ 		fp->close();
+ 		fp = nullptr;
+ 	}
++	if (crcSteps) fprintf(crcSteps, "SkirmishScripts bytes=%d crc=%08X\n", crcScriptBytes, exeCRC.get());
++	crcScriptBytes = 0;
+ 	fp = TheFileSystem->openFile("Data\\Scripts\\MultiplayerScripts.scb", File::READ | File::BINARY);
+ 	if (fp != nullptr) {
+ 		unsigned char crcBlock[blockSize];
+@@ -1424,6 +1421,7 @@ UnsignedInt GlobalData::generateExeCRC()
+ 		while ( (amtRead=fp->read(crcBlock, blockSize)) > 0 )
+ 		{
+ 			exeCRC.computeCRC(crcBlock, amtRead);
++			crcScriptBytes += amtRead;
+ 		}
+ 		fp->close();
+ 		fp = nullptr;
+@@ -1431,6 +1429,7 @@ UnsignedInt GlobalData::generateExeCRC()
+ 
+ 	DEBUG_LOG(("EXE+Version(%d.%d)+SCB CRC is 0x%8.8X", version >> 16, version & 0xffff, exeCRC.get()));
+ 
++	if (crcSteps) { fprintf(crcSteps, "MultiplayerScripts bytes=%d crc=%08X\n", crcScriptBytes, exeCRC.get()); fclose(crcSteps); }
+ 	return exeCRC.get();
+ }
+ 
+diff --git a/Generals/Code/GameEngine/Source/GameLogic/Object/Update/AIUpdate/RailroadGuideAIUpdate.cpp b/Generals/Code/GameEngine/Source/GameLogic/Object/Update/AIUpdate/RailroadGuideAIUpdate.cpp
+index a6b9e2b..55c551d 100644
+--- a/Generals/Code/GameEngine/Source/GameLogic/Object/Update/AIUpdate/RailroadGuideAIUpdate.cpp
++++ b/Generals/Code/GameEngine/Source/GameLogic/Object/Update/AIUpdate/RailroadGuideAIUpdate.cpp
+@@ -29,6 +29,9 @@
+ 
+ #include "PreRTS.h"
+ 
++#include <stdio.h>
++#include <stdlib.h>
++#include "GameLogic/GameLogic.h"
+ #include "Common/Player.h"
+ #include "Common/ThingFactory.h"
+ #include "Common/ThingTemplate.h"
+@@ -1282,6 +1285,21 @@ void RailroadBehavior::updatePositionTrackDistance( PullInfo *pullerInfo, PullIn
+ 	Coord3D normal ;
+ 	Real enforceElevation = TheTerrainLogic->getGroundHeight( turnPos.x, turnPos.y, &normal );
+ 
++	// Optional paired-client diagnostic. The ordinary simulation path is unchanged.
++	static const bool traceRail = getenv("GENERALS_TRACE_RAIL") != NULL;
++	if (traceRail && TheGameLogic->getFrame() <= 500)
++	{
++		fprintf(stderr, "RAIL frame=%u object=%u distance=%.9g speed=%.9g "
++			"target=%.9g,%.9g track=%.9g,%.9g pivot=%.9g,%.9g "
++			"heading=%.9g delta=%.9g xy=%.9g,%.9g elevation=%.9g oldxy=%.9g,%.9g dir=%.9g,%.9g hitch=%.9g dxdy=%.9g,%.9g pullDistance=%.9g\n",
++			(unsigned)TheGameLogic->getFrame(), (unsigned)obj->getID(),
++			myInfo->trackDistance, myInfo->speed, pullerInfo->towHitchPosition.x,
++			pullerInfo->towHitchPosition.y, carPosition.x, carPosition.y, turnPos.x,
++			turnPos.y, desiredAngle, relAngle, mtx.Get_X_Translation(),
++			mtx.Get_Y_Translation(), enforceElevation, obj->getPosition()->x, obj->getPosition()->y,
++			dir->x, dir->y, hitchRadius, dx, dy, pullerInfo->trackDistance);
++	}
++
+ 	obj->setTransformMatrix(&mtx);
+ 
+ 	if (!m_inTunnel)
+diff --git a/Generals/Code/GameEngine/Source/GameLogic/System/GameLogic.cpp b/Generals/Code/GameEngine/Source/GameLogic/System/GameLogic.cpp
+index 5c18089..451f4c3 100644
+--- a/Generals/Code/GameEngine/Source/GameLogic/System/GameLogic.cpp
++++ b/Generals/Code/GameEngine/Source/GameLogic/System/GameLogic.cpp
+@@ -3404,6 +3404,13 @@ void GameLogic::update()
+ 		// removing the need for the second parameter used to distinguish them. Older clients can still
+ 		// parse newer replays because GameMessage::getArgument returns false for the missing playback argument.
+ 		const bool isPlayback = TheRecorder && TheRecorder->isPlaybackMode();
++		static const bool traceSync = getenv("GENERALS_TRACE_RAIL") != nullptr;
++		if (generateForMP && traceSync)
++		{
++			fprintf(stderr, "LAN-CHECK frame=%u crc=%08X playback=%d\n",
++				(unsigned)m_frame, (unsigned)m_CRC, int(isPlayback));
++			fflush(stderr);
++		}
+ 		const GameMessage::Type msgType = isPlayback ? GameMessage::MSG_LOGIC_CRC_PLAYBACK : GameMessage::MSG_LOGIC_CRC;
+ 		GameMessage *msg = newInstance(GameMessage)(msgType);
+ 		msg->appendIntegerArgument(m_CRC);
+diff --git a/Generals/Code/Main/SDL3Main.cpp b/Generals/Code/Main/SDL3Main.cpp
+index 5b011c9..741888a 100644
+--- a/Generals/Code/Main/SDL3Main.cpp
++++ b/Generals/Code/Main/SDL3Main.cpp
+@@ -48,6 +48,8 @@
+ #include "Common/Debug.h"
+ #include "Common/version.h"  // GeneralsX @bugfix BenderAI 14/02/2026 Version class + TheVersion extern
+ #include "SDL3GameEngine.h"
++#include "BuildVersion.h"
++#include "GeneratedVersion.h"
+ 
+ // DXVK WSI
+ #define DXVK_WSI_SDL3 1
+@@ -259,6 +261,10 @@ int main(int argc, char* argv[])
+ 		// GameEngine::init() calls updateWindowTitle() which uses TheVersion
+ 		// Must be created before GameMain() to avoid nullptr dereference
+ 		TheVersion = NEW Version;
++		// GeneralsX @bugfix Codex 21/11/2026 Initialize release version before calculating LAN compatibility CRCs.
++		TheVersion->setVersion(VERSION_MAJOR, VERSION_MINOR, VERSION_BUILDNUM, VERSION_LOCALBUILDNUM,
++			AsciiString(VERSION_BUILDUSER), AsciiString(VERSION_BUILDLOC),
++			AsciiString(__TIME__), AsciiString(__DATE__));
+ 
+ 		// Parse command line (CommandLine class handles argc/argv internally)
+ 		// TheSuperHackers @build felipebraz 10/02/2026 Phase 1.5

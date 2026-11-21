@@ -1,0 +1,24 @@
+name: Platform release inputs
+on: [pull_request, push]
+permissions:
+  contents: read
+jobs:
+  verify:
+    strategy:
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Validate source overlay and asset staging
+        shell: bash
+        run: |
+          set -eu
+          git -C ports/GeneralsX apply --check ../../platforms/native-lan.patch
+          python platforms/stage_assets.py --help
+          python -c "from pathlib import Path; import hashlib; p=Path('platforms/generalsx.big'); assert hashlib.sha256(p.read_bytes()).hexdigest()+'  generalsx.big' in Path('platforms/assets.sha256').read_text().splitlines()"

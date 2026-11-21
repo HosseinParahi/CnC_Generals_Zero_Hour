@@ -57,3 +57,7 @@ This repository is for preservation purposes only and is archived without suppor
 ## License
 
 This repository and its contents are licensed under the GPL v3 license, with additional terms applied. Please see [LICENSE.md](LICENSE.md) for details.
+
+## Modern platform builds
+
+[Apple Silicon build and launch](platforms/apple-silicon/README.md) · [Windows on Snapdragon X](platforms/windows-snapdragon/README.md). The pinned GeneralsX source and LAN patch are shared by both builds.
